@@ -1,0 +1,7 @@
+.env
+log/*
+!log/.gitkeep
+log/container/*
+!log/container/.gitkeep
+log/geral/*
+!log/geral/.gitkeep
