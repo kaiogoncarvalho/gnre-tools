@@ -58,7 +58,7 @@ param(
   [string]$LogDir = "log",
 
   # Prefixo do nome do arquivo de log
-  [string]$LogFilePrefix = "log-docker",
+  [string]$LogFilePrefix = "log",
 
   # Grava a saída do container em arquivo texto (RAW) em log/container.
   [switch]$LogContainerText,
@@ -68,7 +68,7 @@ param(
   [switch]$LogContainerJson,
 
   # Nome/prefixo do arquivo JSON
-  [string]$ContainerJsonPrefix = "log-container"
+  [string]$ContainerJsonPrefix = "log"
 )
 
 $ErrorActionPreference = "Stop"
@@ -212,7 +212,8 @@ foreach ($p in $Ports) {
 }
 
 # Sempre monta o PWD em /app
-$args += @("-v", "${PWD}:/app")
+# (você disse que aqui está certo retroceder uma pasta)
+$args += @("-v", "${PWD}\..:/app")
 
 foreach ($v in $Volumes) { $args += @("-v", $v) }
 
@@ -246,18 +247,6 @@ if ($DryRun) {
   return
 }
 
-# Se NÃO for detached, docker já vai imprimir logs normalmente.
-if (-not $Detached) {
-  docker @args
-  return
-}
-
-# Detached: executa em background e então, se pedido, segue logs.
-# Importante: para seguir logs precisamos de um nome de container.
-if ([string]::IsNullOrWhiteSpace($ContainerName) -and ($Attach -or $Wait)) {
-  throw "Para usar -Attach/-Wait com -Detached, informe -ContainerName (ou use o wrapper com -NamePrefix)."
-}
-
 # Sempre gravar logs (independente de passar parâmetros).
 # - Por padrão grava log geral (transcript) e log do container em texto.
 # - Se você quiser JSON, use -LogContainerJson.
@@ -274,25 +263,16 @@ $containerLogPath = $null
 $containerLogWriter = $null
 
 if ($LogToFile -or $LogContainerJson -or $LogContainerText) {
-  # Preferência por log/ na raiz do projeto. Se existir resources/log (legado), usa ele.
-  $projectRoot = Split-Path -Parent $PSScriptRoot
-  $defaultLogRoot = Join-Path -Path $projectRoot -ChildPath "log"
-  $legacyLogRoot = Join-Path -Path $PSScriptRoot -ChildPath "resources\\log"
-
-  $logRoot = $defaultLogRoot
-  if (Test-Path -Path $legacyLogRoot) {
-    $logRoot = $legacyLogRoot
-  }
+  # Logs sempre na pasta do script (tools\log\geral e tools\log\container)
+  $logRoot = Join-Path -Path $PSScriptRoot -ChildPath "log"
 
   if (-not (Test-Path -Path $logRoot)) {
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
   }
 
-  # subpastas padrao
   $runLogDir = Join-Path -Path $logRoot -ChildPath "geral"
   $containerLogDir = Join-Path -Path $logRoot -ChildPath "container"
 
-  # compat: se existir a estrutura antiga (resources/log/geral), mantém
   if (-not (Test-Path -Path $runLogDir)) {
     New-Item -ItemType Directory -Path $runLogDir -Force | Out-Null
   }
@@ -300,10 +280,10 @@ if ($LogToFile -or $LogContainerJson -or $LogContainerText) {
     New-Item -ItemType Directory -Path $containerLogDir -Force | Out-Null
   }
 
-  # inclui milissegundos para ordenar corretamente e evitar colisões
-  # OBS: Windows não permite ':' em nomes de arquivo. Então usamos '_' no lugar.
-  # Formato solicitado (conceitual): yyyy-mm-dd|hh:mm:ss
-  $ts = Get-Date -Format "yyyy-MM-dd|HH_mm_ss"
+  # Timestamp no padrão desejado (Windows-safe).
+  # O usuário pediu: yyyy-MM-dd|HH_mm_ss, mas '|' é inválido em nomes de arquivo no Windows.
+  # Então usamos '_' no lugar do '|', mantendo a mesma legibilidade e ordenação.
+  $ts = Get-Date -Format "yyyy-MM-dd_HH_mm_ss"
   $tsMs = Get-Date -Format "fff"
   $ts = "${ts}.${tsMs}"
 
@@ -342,6 +322,86 @@ try {
   # ignore
 }
 
+# Se NÃO for detached, docker deve rodar em foreground e imprimir os logs.
+# Aqui também capturamos a saída para os arquivos (container.log / json) quando habilitados.
+if (-not $Detached) {
+  try {
+    if ($LogContainerJson -and $jsonWriter -and $containerLogWriter) {
+      $first = $true
+      $linesSinceFlush = 0
+      $flushEvery = 100
+
+      docker @args | ForEach-Object {
+        $line = $_
+        if ($null -ne $line) {
+          $lineStr = [string]$line
+          $containerLogWriter.WriteLine($lineStr)
+          Write-Output $lineStr
+
+          $entry = [ordered]@{
+            timestamp = (Get-Date).ToString("o")
+            raw       = $lineStr
+          }
+          $jsonLine = ([pscustomobject]$entry | ConvertTo-Json -Depth 10 -Compress)
+
+          if (-not $first) { $jsonWriter.Write(",") }
+          $first = $false
+          $jsonWriter.Write($jsonLine)
+
+          $linesSinceFlush++
+          if ($linesSinceFlush -ge $flushEvery) {
+            $linesSinceFlush = 0
+            $containerLogWriter.Flush()
+            $jsonWriter.Flush()
+          }
+        }
+      }
+
+      $containerLogWriter.Flush()
+      $jsonWriter.Flush()
+
+    } elseif ($containerLogWriter) {
+      docker @args | ForEach-Object {
+        $line = $_
+        if ($null -ne $line) {
+          $lineStr = [string]$line
+          $containerLogWriter.WriteLine($lineStr)
+          Write-Output $lineStr
+        }
+      }
+      $containerLogWriter.Flush()
+
+    } else {
+      docker @args
+    }
+  } finally {
+    if ($jsonWriter) {
+      try {
+        $jsonWriter.Write("]")
+        $jsonWriter.Flush()
+        $jsonWriter.Dispose()
+      } catch {}
+    }
+
+    if ($containerLogWriter) {
+      try { $containerLogWriter.Flush(); $containerLogWriter.Dispose() } catch {}
+    }
+
+    if ($transcriptPath) {
+      try { Stop-Transcript | Out-Null } catch {}
+    }
+  }
+
+  return
+}
+
+# --- A partir daqui, é SOMENTE fluxo detached ---
+
+# Importante: para seguir logs precisamos de um nome de container.
+if ([string]::IsNullOrWhiteSpace($ContainerName) -and ($Attach -or $Wait)) {
+  throw "Para usar -Attach/-Wait com -Detached, informe -ContainerName (ou use o wrapper com -NamePrefix)."
+}
+
 # Remove parse: o log do container NÃO é JSON válido (é dict Python). Então não tentamos converter.
 function Convert-ContainerLineToParsedObject {
   param([string]$Line)
@@ -349,10 +409,10 @@ function Convert-ContainerLineToParsedObject {
 }
 
 try {
+  # Em detached, subimos o container (não mostramos output aqui)
   docker @args | Out-Null
 
   # Se vamos aguardar, precisamos evitar corrida: docker logs -f pode terminar antes/depois.
-  # Rodamos docker wait em background e seguramos logs até o final.
   $waitJob = $null
   if ($Wait) {
     $waitJob = Start-Job -ScriptBlock {
@@ -366,9 +426,8 @@ try {
       if ($LogContainerJson -and $jsonWriter -and $containerLogWriter) {
         $first = $true
         $linesSinceFlush = 0
-        $flushEvery = 100  # reduz overhead: flush a cada 100 linhas
+        $flushEvery = 100
 
-        # Pequeno retry para evitar corrida onde o container finaliza muito rápido e os logs ainda não estão disponíveis.
         $maxTries = 5
         for ($try = 1; $try -le $maxTries; $try++) {
           $hadAny = $false
@@ -378,8 +437,8 @@ try {
             $line = $_
 
             $containerLogWriter.WriteLine($line)
+            Write-Output $line
 
-            # salva como JSON (raw + timestamp)
             $entry = [ordered]@{
               timestamp = (Get-Date).ToString("o")
               raw       = $line
@@ -403,18 +462,17 @@ try {
           Start-Sleep -Milliseconds 200
         }
 
-        # flush final
         $containerLogWriter.Flush()
         $jsonWriter.Flush()
 
       } elseif ($containerLogWriter) {
-        # Só texto: grava a saída do docker logs diretamente.
         docker logs -f --since 0s $ContainerName | ForEach-Object {
           $line = $_
           $containerLogWriter.WriteLine($line)
           Write-Output $line
         }
         $containerLogWriter.Flush()
+
       } else {
         docker logs -f $ContainerName
       }
@@ -436,12 +494,10 @@ try {
   }
 
 } finally {
-  # Cleanup docker container
   if ($Detached -and $Wait -and -not $Keep -and -not [string]::IsNullOrWhiteSpace($ContainerName)) {
     try { docker rm -f $ContainerName | Out-Null } catch {}
   }
 
-  # finaliza o JSON incremental
   if ($jsonWriter) {
     try {
       $jsonWriter.Write("]")

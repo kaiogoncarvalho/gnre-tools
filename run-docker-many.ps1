@@ -129,11 +129,9 @@ if (-not $NoEnvFile) {
 }
 
 # Defaults via .env (parâmetro CLI sempre vence)
-# Sugestões de variáveis:
-#   MANY_COUNT=5
-#   MANY_NAME_PREFIX=teste
-#   MANY_DETACHED=true
-#   MANY_LOG_TO_FILE=true
+# Variáveis suportadas:
+#   MANY_COUNT=30
+#   MANY_NAME_PREFIX=ms-gnre-debitos-
 if (-not $PSBoundParameters.ContainsKey('Count')) {
   $Count = Get-EnvInt -Name "MANY_COUNT" -Default 0
 }
@@ -148,17 +146,8 @@ if (-not $PSBoundParameters.ContainsKey('NamePrefix')) {
   }
 }
 
-# Se não foi informado na CLI, permite ligar via .env
-if (-not $PSBoundParameters.ContainsKey('Detached')) {
-  if (Get-EnvBool -Name "MANY_DETACHED" -Default:$false) {
-    $Detached = $true
-  }
-}
-if (-not $PSBoundParameters.ContainsKey('LogToFile')) {
-  if (Get-EnvBool -Name "MANY_LOG_TO_FILE" -Default:$false) {
-    $LogToFile = $true
-  }
-}
+# OBS: Não lemos mais MANY_DETACHED / MANY_LOG_TO_FILE pelo .env.
+# Isso deve ser controlado explicitamente via parâmetros (-Detached / -LogToFile).
 
 function Wait-WhileTooManyJobs {
   param(

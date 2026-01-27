@@ -2,8 +2,8 @@
 [CmdletBinding()]
 param(
   [string]$Tag = "latest",
-  [string]$Dockerfile = "Dockerfile",
-  [string]$Context = ".",
+  [string]$Dockerfile = "../Dockerfile",
+  [string]$Context = "../.",
   [string]$EnvFile = ".env"
 )
 
