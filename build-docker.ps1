@@ -4,7 +4,8 @@ param(
   [string]$Tag = "latest",
   [string]$Dockerfile = "../Dockerfile",
   [string]$Context = "../.",
-  [string]$EnvFile = ".env"
+  [string]$EnvFile = ".env",
+  [switch]$NoCache = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,8 +74,15 @@ if ([string]::IsNullOrWhiteSpace($gitUser) -or [string]::IsNullOrWhiteSpace($git
 
 $fullTag = "${ImageName}:${Tag}"
 
+# monta args extras do build
+$extraBuildArgs = @()
+if ($NoCache) {
+  $extraBuildArgs += "--no-cache"
+}
+
 docker build `
   -f $Dockerfile `
+  $extraBuildArgs `
   --build-arg GIT_USERNAME=$gitUser `
   --build-arg GIT_PASSWORD=$gitPass `
   -t $fullTag `
