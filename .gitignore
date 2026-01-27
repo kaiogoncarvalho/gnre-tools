@@ -5,3 +5,4 @@ log/container/*
 !log/container/.gitkeep
 log/geral/*
 !log/geral/.gitkeep
+.idea
