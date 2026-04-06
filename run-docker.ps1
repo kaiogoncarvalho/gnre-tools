@@ -1,6 +1,12 @@
 # run-docker.ps1
 [CmdletBinding()]
 param(
+  # --- Docker Compose mode ---
+  # Quando informado, usa 'docker compose run' em vez de 'docker run'.
+  # ImageName e Tag ficam opcionais.
+  [string]$Service = "",
+  [string]$ComposeFile = "docker-compose.yml",
+
   [string]$ImageName,
   [string]$Tag,
   [string]$ContainerName = "",           # vazio por padrão: Docker gera nome automaticamente
@@ -112,7 +118,7 @@ if (-not $NoEnvFile) {
 
 # Resolve ImageName/Tag a partir do .env quando o usuário não passar explicitamente.
 # Precedência: parâmetro CLI > ambiente/.env.
-if (-not $PSBoundParameters.ContainsKey('ImageName')) {
+if ([string]::IsNullOrWhiteSpace($ImageName)) {
   if (-not [string]::IsNullOrWhiteSpace($env:IMAGE_NAME)) {
     $ImageName = $env:IMAGE_NAME
   }
@@ -125,16 +131,28 @@ if (-not $PSBoundParameters.ContainsKey('Tag')) {
   }
 }
 
-if ([string]::IsNullOrWhiteSpace($ImageName)) {
-  throw "ImageName vazio. Defina IMAGE_NAME no .env (ou passe -ImageName)."
-}
-if ([string]::IsNullOrWhiteSpace($Tag)) {
-  throw "Tag vazia. Defina IMAGE_TAG (ou TAG) no .env (ou passe -Tag)."
+$fullTag = ""
+if ([string]::IsNullOrWhiteSpace($Service)) {
+  if ([string]::IsNullOrWhiteSpace($ImageName)) {
+    throw "ImageName vazio. Defina IMAGE_NAME no .env (ou passe -ImageName) ou use -Service para modo compose."
+  }
+  if ([string]::IsNullOrWhiteSpace($Tag)) {
+    throw "Tag vazia. Defina IMAGE_TAG (ou TAG) no .env (ou passe -Tag) ou use -Service para modo compose."
+  }
+  $fullTag = "${ImageName}:${Tag}"
 }
 
-$fullTag = "${ImageName}:${Tag}"
-
-$args = @("run")
+$args = @()
+if (-not [string]::IsNullOrWhiteSpace($Service)) {
+  # Modo docker compose run
+  $args += "compose"
+  if (-not [string]::IsNullOrWhiteSpace($ComposeFile) -and (Test-Path $ComposeFile)) {
+    $args += @("-f", $ComposeFile)
+  }
+  $args += "run"
+} else {
+  $args = @("run")
+}
 
 if ($Interactive) { $args += @("-it") }
 if ($Detached) { $args += "-d" }
@@ -152,7 +170,14 @@ if (-not [string]::IsNullOrWhiteSpace($Workdir)) {
   $args += @("--workdir", $Workdir)
 }
 
-# só define nome se o usuário passar um nome explicitamente
+# Auto-gera nome do container com serviço + timestamp quando não informado,
+# evitando conflito ao rodar o mesmo serviço mais de uma vez.
+if ([string]::IsNullOrWhiteSpace($ContainerName) -and -not [string]::IsNullOrWhiteSpace($Service)) {
+  $tsShort = Get-Date -Format "yyyyMMdd_HHmmss_fff"
+  $ContainerName = "${Service}-${tsShort}"
+}
+
+# só define nome se o usuário passar um nome explicitamente (ou auto-gerado acima)
 if (-not [string]::IsNullOrWhiteSpace($ContainerName)) {
   $args += @("--name", $ContainerName)
 }
@@ -219,7 +244,11 @@ foreach ($v in $Volumes) { $args += @("-v", $v) }
 
 if ($ExtraArgs.Count -gt 0) { $args += $ExtraArgs }
 
-$args += $fullTag
+if (-not [string]::IsNullOrWhiteSpace($Service)) {
+  $args += $Service
+} else {
+  $args += $fullTag
+}
 
 # Remover o antigo bloco de Command:
 # if ($Command.Count -gt 0) { $args += $Command }
@@ -253,6 +282,20 @@ if ($DryRun) {
 if (-not $PSBoundParameters.ContainsKey('LogToFile')) { $LogToFile = $true }
 if (-not $PSBoundParameters.ContainsKey('LogContainerText') -and -not $PSBoundParameters.ContainsKey('LogContainerJson')) {
   $LogContainerText = $true
+}
+
+# Usa o nome do serviço (ou imagem) como prefixo do log quando não informado explicitamente.
+if (-not $PSBoundParameters.ContainsKey('LogFilePrefix') -or $LogFilePrefix -eq "log") {
+  if (-not [string]::IsNullOrWhiteSpace($Service)) {
+    $LogFilePrefix = $Service
+  } elseif (-not [string]::IsNullOrWhiteSpace($ContainerName)) {
+    $LogFilePrefix = $ContainerName
+  } elseif (-not [string]::IsNullOrWhiteSpace($ImageName)) {
+    $LogFilePrefix = $ImageName -replace "[:/\\]", "-"
+  }
+}
+if (-not $PSBoundParameters.ContainsKey('ContainerJsonPrefix') -or $ContainerJsonPrefix -eq "log") {
+  $ContainerJsonPrefix = $LogFilePrefix
 }
 
 # Inicia logging em arquivo ANTES de rodar docker/logs para capturar tudo.

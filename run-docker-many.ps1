@@ -10,6 +10,12 @@ param(
   # Caminho do script base
   [string]$ScriptPath = ".\\run-docker.ps1",
 
+  # --- Docker Compose mode ---
+  # Quando informado, usa 'docker compose run' em vez de 'docker run'.
+  # ImageName e Tag ficam opcionais.
+  [string]$Service = "",
+  [string]$ComposeFile = "docker-compose.yml",
+
   # Parâmetros comuns repassados
   [string]$ImageName,
   [string]$Tag,
@@ -146,6 +152,20 @@ if (-not $PSBoundParameters.ContainsKey('NamePrefix')) {
   }
 }
 
+if (-not $PSBoundParameters.ContainsKey('Service')) {
+  $envService = $env:MANY_SERVICE
+  if (-not [string]::IsNullOrWhiteSpace($envService)) {
+    $Service = $envService
+  }
+}
+
+if (-not $PSBoundParameters.ContainsKey('ComposeFile')) {
+  $envCompose = $env:MANY_COMPOSE_FILE
+  if (-not [string]::IsNullOrWhiteSpace($envCompose)) {
+    $ComposeFile = $envCompose
+  }
+}
+
 # OBS: Não lemos mais MANY_DETACHED / MANY_LOG_TO_FILE pelo .env.
 # Isso deve ser controlado explicitamente via parâmetros (-Detached / -LogToFile).
 
@@ -191,9 +211,15 @@ $baseParams = @{
   EnvFile = $EnvFile
 }
 
-# Só repassa ImageName/Tag se vierem informados. Caso contrário, o run-docker.ps1 resolve via .env.
-if (-not [string]::IsNullOrWhiteSpace($ImageName)) { $baseParams.ImageName = $ImageName }
-if (-not [string]::IsNullOrWhiteSpace($Tag)) { $baseParams.Tag = $Tag }
+# Modo compose: repassa Service/ComposeFile. ImageName/Tag ficam opcionais.
+if (-not [string]::IsNullOrWhiteSpace($Service)) {
+  $baseParams.Service = $Service
+  if (-not [string]::IsNullOrWhiteSpace($ComposeFile)) { $baseParams.ComposeFile = $ComposeFile }
+} else {
+  # Só repassa ImageName/Tag se vierem informados. Caso contrário, o run-docker.ps1 resolve via .env.
+  if (-not [string]::IsNullOrWhiteSpace($ImageName)) { $baseParams.ImageName = $ImageName }
+  if (-not [string]::IsNullOrWhiteSpace($Tag)) { $baseParams.Tag = $Tag }
+}
 
 if ($Ports.Count -gt 0)     { $baseParams.Ports = $Ports }
 if ($Volumes.Count -gt 0)   { $baseParams.Volumes = $Volumes }
@@ -262,9 +288,15 @@ try {
     $runParams = @{} + $baseParams
 
     # Nome único (opcional)
+    # Se NamePrefix não for informado mas Service estiver definido, usa Service como prefixo.
+    $effectivePrefix = $NamePrefix
+    if ([string]::IsNullOrWhiteSpace($effectivePrefix) -and -not [string]::IsNullOrWhiteSpace($Service)) {
+      $effectivePrefix = "${Service}-"
+    }
+
     $containerNameThisRun = ""
-    if (-not [string]::IsNullOrWhiteSpace($NamePrefix)) {
-      $containerNameThisRun = "${NamePrefix}${idx}"
+    if (-not [string]::IsNullOrWhiteSpace($effectivePrefix)) {
+      $containerNameThisRun = "${effectivePrefix}${idx}"
       $runParams.ContainerName = $containerNameThisRun
     }
 

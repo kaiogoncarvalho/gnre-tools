@@ -1,11 +1,12 @@
 # build-docker.ps1
 [CmdletBinding()]
 param(
-  [string]$Tag = "latest",
-  [string]$Dockerfile = "../Dockerfile",
-  [string]$Context = "../.",
+  [string]$ComposeFile = "../docker-compose.yml",
   [string]$EnvFile = ".env",
-  [switch]$NoCache = $true
+  [switch]$NoCache,
+  [switch]$Pull,
+  # Se quiser buildar só um serviço específico, passe o nome. Vazio = todos.
+  [string]$Service = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,7 +27,6 @@ function Import-DotEnvFile {
     $key = $parts[0].Trim()
     $value = $parts[1].Trim()
 
-    # remove aspas simples/duplas nas bordas, se houver
     if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
       $value = $value.Substring(1, $value.Length - 2)
     }
@@ -37,34 +37,6 @@ function Import-DotEnvFile {
 
 Import-DotEnvFile -Path $EnvFile
 
-# Precedência de configuração:
-# 1) parâmetro explicitamente passado
-# 2) variável de ambiente (carregada do .env ou já existente)
-# 3) default do próprio script
-if (-not $PSBoundParameters.ContainsKey('ImageName')) {
-  if (-not [string]::IsNullOrWhiteSpace($env:IMAGE_NAME)) {
-    $ImageName = $env:IMAGE_NAME
-  }
-}
-
-if (-not $PSBoundParameters.ContainsKey('Tag')) {
-  if (-not [string]::IsNullOrWhiteSpace($env:IMAGE_TAG)) {
-    $Tag = $env:IMAGE_TAG
-  } elseif (-not [string]::IsNullOrWhiteSpace($env:TAG)) {
-    # alias opcional
-    $Tag = $env:TAG
-  }
-}
-
-if ([string]::IsNullOrWhiteSpace($ImageName)) {
-  throw "ImageName vazio. Defina -ImageName ou IMAGE_NAME no ambiente/.env."
-}
-
-# Evita ambiguidade do tipo IMAGE_NAME=repo:tag + -Tag
-if ($ImageName -match ":") {
-  throw "IMAGE_NAME/-ImageName não deve conter ':' (tag). Use apenas o repositório (ex: gnre-debitos/ms) e defina a tag em -Tag ou IMAGE_TAG."
-}
-
 $gitUser = $env:GIT_USERNAME
 $gitPass = $env:GIT_PASSWORD
 
@@ -72,18 +44,29 @@ if ([string]::IsNullOrWhiteSpace($gitUser) -or [string]::IsNullOrWhiteSpace($git
   throw "Variáveis ausentes. Defina GIT_USERNAME e GIT_PASSWORD no ambiente ou no arquivo .env."
 }
 
-$fullTag = "${ImageName}:${Tag}"
-
-# monta args extras do build
-$extraBuildArgs = @()
-if ($NoCache) {
-  $extraBuildArgs += "--no-cache"
+if (-not (Test-Path $ComposeFile)) {
+  throw "docker-compose.yml não encontrado em: $ComposeFile"
 }
 
-docker build `
-  -f $Dockerfile `
-  $extraBuildArgs `
-  --build-arg GIT_USERNAME=$gitUser `
-  --build-arg GIT_PASSWORD=$gitPass `
-  -t $fullTag `
-  $Context
+$buildArgs = @("compose", "-f", $ComposeFile, "build")
+
+if ($NoCache) {
+  $buildArgs += "--no-cache"
+}
+
+if ($Pull) {
+  $buildArgs += "--pull"
+}
+
+$buildArgs += @("--build-arg", "GIT_USERNAME=$gitUser")
+$buildArgs += @("--build-arg", "GIT_PASSWORD=$gitPass")
+
+if (-not [string]::IsNullOrWhiteSpace($Service)) {
+  $buildArgs += $Service
+  Write-Host "Buildando serviço: $Service"
+} else {
+  Write-Host "Buildando todos os serviços..."
+}
+
+Write-Host ("docker " + ($buildArgs -join " "))
+docker @buildArgs
