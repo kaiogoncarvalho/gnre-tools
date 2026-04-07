@@ -3,7 +3,11 @@
 param(
   [string]$ComposeFile = "../docker-compose.yml",
   [string]$EnvFile = ".env",
+  # Por padrão, este script sempre faz build sem cache para garantir reinstalação
+  # dos requirements e evitar resultados inconsistentes em dependências VCS.
+  # Use -UseCache se quiser permitir cache.
   [switch]$NoCache,
+  [switch]$UseCache,
   [switch]$Pull,
   # Se quiser buildar só um serviço específico, passe o nome. Vazio = todos.
   [string]$Service = ""
@@ -50,7 +54,8 @@ if (-not (Test-Path $ComposeFile)) {
 
 $buildArgs = @("compose", "-f", $ComposeFile, "build")
 
-if ($NoCache) {
+# Sem cache por padrão.
+if (-not $UseCache -or $NoCache) {
   $buildArgs += "--no-cache"
 }
 
@@ -60,6 +65,11 @@ if ($Pull) {
 
 $buildArgs += @("--build-arg", "GIT_USERNAME=$gitUser")
 $buildArgs += @("--build-arg", "GIT_PASSWORD=$gitPass")
+
+# Sempre invalida a camada de instalação de requirements no Dockerfile.
+# Isso força reinstalação mesmo quando requirements.txt não mudou.
+$reqsForce = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmssffff')
+$buildArgs += @("--build-arg", "REQS_FORCE_REINSTALL=$reqsForce")
 
 if (-not [string]::IsNullOrWhiteSpace($Service)) {
   $buildArgs += $Service
